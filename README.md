@@ -9,7 +9,7 @@ Exposes four tools that Claude (or any MCP client) can call:
 
 | Tool | Purpose |
 |---|---|
-| `search_similar_tickets` | Semantic search (via your coworker's vector index) + live Zendesk keyword search for similar past issues |
+| `search_similar_tickets` | Semantic search (via an external vector index) + live Zendesk keyword search for similar past issues |
 | `get_customer_context` | Pull a customer's org + full ticket history before responding |
 | `assess_solutions_by_version` | Find past fixes for an issue and check if they apply to the customer's version |
 | `summarize_daily_work` | Roll up a day's Zendesk activity: tickets touched, by status, high-priority follow-ups |
@@ -33,7 +33,7 @@ table drifts. Params are passed as a JSON object matching the schema below.
 
 ### Calling a tool through Claude
 
-Just describe what you want in plain language — Claude fills in the parameters:
+Describe what you want in plain language — Claude fills in the parameters:
 
 ```
 Run summarize_daily_work for 2026-07-20
@@ -100,8 +100,8 @@ test-client.mjs      – a tiny MCP client used to sanity-check the server witho
 
 ### Why the adapter pattern for the vector DB
 
-You don't yet know exactly how your coworker's RAG index is exposed. Rather than hard-coding a client, `vectorDb.ts`
-defines a one-method interface:
+The exact shape of the backing RAG index isn't fixed yet. Rather than hard-coding a client, `vectorDb.ts` defines
+a one-method interface:
 
 ```ts
 interface VectorDb {
@@ -109,11 +109,11 @@ interface VectorDb {
 }
 ```
 
-Everything else in the codebase (the tools) only depends on that interface, not on a specific backend. Today
-`VECTOR_DB_PROVIDER=mock` in `.env` gives you a fake in-memory index so you can build and test end-to-end.
-Once you know his API, you either:
-- use the built-in `HttpVectorDb` if he put a query endpoint in front of it (adjust the request/response shape
-  in `vectorDb.ts` to match his actual API), or
+Everything else in the codebase (the tools) only depends on that interface, not on a specific backend.
+`VECTOR_DB_PROVIDER=mock` in `.env` gives a fake in-memory index for building and testing end-to-end. Once the
+real index's API is known:
+- use the built-in `HttpVectorDb` if there's a query endpoint in front of it (adjust the request/response shape
+  in `vectorDb.ts` to match the actual API), or
 - add a new class (e.g. `PineconeVectorDb`, `QdrantVectorDb`) implementing the same interface, and add a case
   for it in `vectorDbFromEnv()`.
 
@@ -162,14 +162,16 @@ Add it to your MCP client config (e.g. Claude Desktop's `claude_desktop_config.j
 }
 ```
 
-## Next steps
+## Notes / open items
 
-1. Ask your coworker exactly how his vector index is queryable (REST endpoint? Python service? direct DB
-   connection to Pinecone/Qdrant/pgvector/etc). That determines whether you use `HttpVectorDb` as-is, tweak it,
-   or write a new adapter class.
+(Internal notes — may be stale, keep or prune as they're resolved.)
+
+1. The real vector index's query interface isn't confirmed yet (REST endpoint? Python service? direct DB
+   connection to Pinecone/Qdrant/pgvector/etc). That determines whether `HttpVectorDb` works as-is, needs
+   tweaking, or a new adapter class is needed.
 2. Once wired to the real index, revisit the `metadata` shape `assess_solutions_by_version` expects
-   (`fixedInVersion`, `product`, `tags`) — align it with whatever fields his index actually stores per chunk.
+   (`fixedInVersion`, `product`, `tags`) — align it with whatever fields the index actually stores per chunk.
 3. Consider adding a `list_products` or `list_versions` tool if there's a canonical version list to validate
    `customerVersion` against.
 4. Add tests (e.g. with `node --test`) for `compareVersions` in `assessSolutions.ts` — it's a naive semver
-   comparator and worth hardening if you start seeing versions like `8.4.2-rc1`.
+   comparator and worth hardening for versions like `8.4.2-rc1`.
