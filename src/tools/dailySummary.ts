@@ -12,11 +12,16 @@ export function registerDailySummary(server: McpServer, zendesk: ZendeskClient) 
         "and any high-priority items needing follow-up. Ask for this at end of day or during standup prep.",
       inputSchema: {
         date: z.string().optional().describe("ISO date (YYYY-MM-DD) to summarize; defaults to today"),
+        assignee: z
+          .string()
+          .optional()
+          .describe("Assignee email to scope the summary to; defaults to ZENDESK_EMAIL (you)"),
       },
     },
-    async ({ date }) => {
+    async ({ date, assignee }) => {
       const isoDate = date ?? new Date().toISOString().slice(0, 10);
-      const { results: tickets } = await zendesk.ticketsUpdatedSince(isoDate);
+      const scopedAssignee = assignee ?? process.env.ZENDESK_EMAIL;
+      const { results: tickets } = await zendesk.ticketsUpdatedSince(isoDate, { assignee: scopedAssignee });
 
       const byStatus: Record<string, number> = {};
       const highPriority: typeof tickets = [];
