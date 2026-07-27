@@ -29,18 +29,67 @@ export function registerDailySummary(server: McpServer, zendesk: ZendeskClient) 
       nextDay.setUTCDate(nextDay.getUTCDate() + 1);
       const before = nextDay.toISOString().slice(0, 10);
       const scopedAssignee = assignee ?? process.env.ZENDESK_EMAIL;
-      const { results: tickets } = await zendesk.ticketsUpdatedSince(isoDate, { assignee: scopedAssignee, before });
+      const { results: candidates } = await zendesk.ticketsUpdatedSince(isoDate, { assignee: scopedAssignee, before });
+      const me = scopedAssignee ? await zendesk.getUserByEmail(scopedAssignee) : null;
+
+      const windowStart = new Date(`${isoDate}T00:00:00Z`);
+      const windowEnd = new Date(`${before}T00:00:00Z`);
+
+      const touched: typeof candidates = [];
+      const changedNotByYou: typeof candidates = [];
+      const commentsById = new Map<number, Awaited<ReturnType<typeof zendesk.getTicketComments>>["comments"]>();
+
+      for (const t of candidates) {
+        let lastComment: { author_id: number; created_at: string; body: string; public: boolean } | undefined;
+        try {
+          const { comments } = await zendesk.getTicketComments(t.id);
+          commentsById.set(t.id, comments);
+          lastComment = comments[comments.length - 1];
+        } catch {
+          // couldn't fetch comments; fall through and treat as changed-not-by-you since we can't confirm authorship
+        }
+
+        const commentedByYouInWindow =
+          me != null &&
+          lastComment != null &&
+          lastComment.author_id === me.id &&
+          new Date(lastComment.created_at) >= windowStart &&
+          new Date(lastComment.created_at) < windowEnd;
+
+        if (commentedByYouInWindow) {
+          touched.push(t);
+        } else {
+          changedNotByYou.push(t);
+        }
+      }
 
       const byStatus: Record<string, number> = {};
-      const highPriority: typeof tickets = [];
-      for (const t of tickets) {
+      const highPriority: typeof candidates = [];
+      for (const t of touched) {
         byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
         if (t.priority === "urgent" || t.priority === "high") highPriority.push(t);
       }
 
+      const renderTicket = (t: (typeof candidates)[number]) => {
+        const lines: string[] = [];
+        lines.push(`- #${t.id} [${t.status}] ${t.subject} (updated ${t.updated_at})`);
+        if (t.description) {
+          lines.push(`  Description: ${truncate(t.description)}`);
+        }
+        const comments = commentsById.get(t.id);
+        const lastComment = comments?.[comments.length - 1];
+        if (lastComment) {
+          const author = lastComment.public ? "public reply" : "internal note";
+          lines.push(`  Latest activity (${author}, ${lastComment.created_at}): ${truncate(lastComment.body)}`);
+        } else if (comments === undefined) {
+          lines.push(`  Latest activity: (couldn't fetch comments)`);
+        }
+        return lines;
+      };
+
       const lines: string[] = [];
       lines.push(`## Zendesk activity summary — ${isoDate}`);
-      lines.push(`Total tickets touched: ${tickets.length}`);
+      lines.push(`Total tickets touched: ${touched.length}`);
       lines.push(`By status: ${Object.entries(byStatus).map(([s, n]) => `${s}=${n}`).join(", ") || "none"}`);
       lines.push("");
       lines.push(`## High-priority / needs follow-up (${highPriority.length})`);
@@ -52,22 +101,20 @@ export function registerDailySummary(server: McpServer, zendesk: ZendeskClient) 
         }
       }
       lines.push("");
-      lines.push(`## Full list`);
-      for (const t of tickets) {
-        lines.push(`- #${t.id} [${t.status}] ${t.subject} (updated ${t.updated_at})`);
-        if (t.description) {
-          lines.push(`  Description: ${truncate(t.description)}`);
-        }
-        try {
-          const { comments } = await zendesk.getTicketComments(t.id);
-          const lastComment = comments[comments.length - 1];
-          if (lastComment) {
-            const author = lastComment.public ? "public reply" : "internal note";
-            lines.push(`  Latest activity (${author}, ${lastComment.created_at}): ${truncate(lastComment.body)}`);
-          }
-        } catch {
-          lines.push(`  Latest activity: (couldn't fetch comments)`);
-        }
+      lines.push(`## Full list — tickets you commented on today`);
+      if (touched.length === 0) {
+        lines.push("None.");
+      } else {
+        for (const t of touched) lines.push(...renderTicket(t));
+      }
+      lines.push("");
+      lines.push(
+        `## Changed today but not by you (${changedNotByYou.length}) — status/automation updates, or comments from other agents`
+      );
+      if (changedNotByYou.length === 0) {
+        lines.push("None.");
+      } else {
+        for (const t of changedNotByYou) lines.push(...renderTicket(t));
       }
 
       return { content: [{ type: "text", text: lines.join("\n") }] };

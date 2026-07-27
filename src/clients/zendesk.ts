@@ -93,6 +93,12 @@ export class ZendeskClient {
     return this.request<{ user: ZendeskUser }>(`/users/${id}.json`);
   }
 
+  /** Resolve an agent's email to their Zendesk user id, e.g. to attribute comment authorship. */
+  async getUserByEmail(email: string) {
+    const { users } = await this.request<{ users: ZendeskUser[] }>("/users/search.json", { query: email });
+    return users.find((u) => u.email.toLowerCase() === email.toLowerCase()) ?? null;
+  }
+
   async getOrganization(id: number) {
     return this.request<{ organization: ZendeskOrganization }>(`/organizations/${id}.json`);
   }
