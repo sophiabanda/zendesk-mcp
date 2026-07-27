@@ -2,6 +2,11 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ZendeskClient } from "../clients/zendesk.js";
 
+function truncate(text: string, maxLen = 300): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > maxLen ? `${oneLine.slice(0, maxLen)}…` : oneLine;
+}
+
 export function registerDailySummary(server: McpServer, zendesk: ZendeskClient) {
   server.registerTool(
     "summarize_daily_work",
@@ -47,6 +52,19 @@ export function registerDailySummary(server: McpServer, zendesk: ZendeskClient) 
       lines.push(`## Full list`);
       for (const t of tickets) {
         lines.push(`- #${t.id} [${t.status}] ${t.subject} (updated ${t.updated_at})`);
+        if (t.description) {
+          lines.push(`  Description: ${truncate(t.description)}`);
+        }
+        try {
+          const { comments } = await zendesk.getTicketComments(t.id);
+          const lastComment = comments[comments.length - 1];
+          if (lastComment) {
+            const author = lastComment.public ? "public reply" : "internal note";
+            lines.push(`  Latest activity (${author}, ${lastComment.created_at}): ${truncate(lastComment.body)}`);
+          }
+        } catch {
+          lines.push(`  Latest activity: (couldn't fetch comments)`);
+        }
       }
 
       return { content: [{ type: "text", text: lines.join("\n") }] };
