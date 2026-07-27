@@ -25,8 +25,11 @@ export function registerDailySummary(server: McpServer, zendesk: ZendeskClient) 
     },
     async ({ date, assignee }) => {
       const isoDate = date ?? new Date().toISOString().slice(0, 10);
+      const nextDay = new Date(`${isoDate}T00:00:00Z`);
+      nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+      const before = nextDay.toISOString().slice(0, 10);
       const scopedAssignee = assignee ?? process.env.ZENDESK_EMAIL;
-      const { results: tickets } = await zendesk.ticketsUpdatedSince(isoDate, { assignee: scopedAssignee });
+      const { results: tickets } = await zendesk.ticketsUpdatedSince(isoDate, { assignee: scopedAssignee, before });
 
       const byStatus: Record<string, number> = {};
       const highPriority: typeof tickets = [];

@@ -112,11 +112,12 @@ export class ZendeskClient {
   }
 
   /** Tickets updated/solved within a date range, e.g. for the daily summary tool. */
-  async ticketsUpdatedSince(isoDate: string, opts?: { statuses?: string[]; assignee?: string }) {
+  async ticketsUpdatedSince(isoDate: string, opts?: { statuses?: string[]; assignee?: string; before?: string }) {
     const statusFilter = opts?.statuses?.length ? ` status<${opts.statuses.join(" status<")}` : "";
     const assigneeFilter = opts?.assignee ? ` assignee:${opts.assignee}` : "";
+    const beforeFilter = opts?.before ? ` updated<${opts.before}` : "";
     return this.request<{ results: ZendeskTicket[]; count: number }>("/search.json", {
-      query: `type:ticket updated>=${isoDate}${statusFilter}${assigneeFilter}`,
+      query: `type:ticket updated>=${isoDate}${beforeFilter}${statusFilter}${assigneeFilter}`,
       sort_by: "updated_at",
       sort_order: "desc",
     });
