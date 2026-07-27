@@ -97,10 +97,17 @@ export class ZendeskClient {
     return this.request<{ organization: ZendeskOrganization }>(`/organizations/${id}.json`);
   }
 
-  /** Tickets requested by, or associated with, a given org/user for "customer history" lookups. */
+  /** Tickets requested by a given user, for "customer history" lookups. */
   async searchTicketsByRequester(email: string) {
     return this.request<{ results: ZendeskTicket[]; count: number }>("/search.json", {
       query: `type:ticket requester:${email}`,
+    });
+  }
+
+  /** Tickets tied to a given customer organization by name, for org-level "customer history" lookups. */
+  async searchTicketsByOrganization(organizationName: string) {
+    return this.request<{ results: ZendeskTicket[]; count: number }>("/search.json", {
+      query: `type:ticket organization:"${organizationName}"`,
     });
   }
 

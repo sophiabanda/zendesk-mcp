@@ -14,6 +14,73 @@ Exposes four tools that Claude (or any MCP client) can call:
 | `assess_solutions_by_version` | Find past fixes for an issue and check if they apply to the customer's version |
 | `summarize_daily_work` | Roll up a day's Zendesk activity: tickets touched, by status, high-priority follow-ups |
 
+## Tool reference
+
+Each tool's parameters are defined by its `inputSchema` in `src/tools/*.ts` — that file is the source of truth if this
+table drifts. Params are passed as a JSON object matching the schema below.
+
+| Tool | Parameter | Type | Required | Default | Notes |
+|---|---|---|---|---|---|
+| `search_similar_tickets` | `issue` | string | yes | — | Description of the issue/symptom to search for |
+| | `topK` | integer (1-20) | no | `5` | Max number of similar past tickets to return |
+| `get_customer_context` | `requesterEmail` | string (email) | one of `requesterEmail`/`organization` required | — | Single customer/requester email address |
+| | `organization` | string | one of `requesterEmail`/`organization` required | — | Customer organization name, e.g. `"Anthology"` — pulls tickets for the whole account instead of one contact |
+| `assess_solutions_by_version` | `issue` | string | yes | — | Issue description to search past solutions for |
+| | `customerVersion` | string | yes | — | Customer's current product version, e.g. `"8.2.0"` |
+| | `topK` | integer (1-20) | no | `5` | Max number of past-solution matches to consider |
+| `summarize_daily_work` | `date` | string (`YYYY-MM-DD`) | no | today | Day to summarize |
+| | `assignee` | string (email) | no | `ZENDESK_EMAIL` from `.env` | Scopes results to this assignee; defaults to you |
+
+### Calling a tool through Claude
+
+Just describe what you want in plain language — Claude fills in the parameters:
+
+```
+Run summarize_daily_work for 2026-07-20
+Search similar tickets for "PDF export hangs on large files", top 10
+Get customer context for jane@example.com
+Get customer context for the organization Anthology
+```
+
+### Calling a tool via raw MCP JSON-RPC
+
+This is the `tools/call` request the client actually sends (see `test-client.mjs` for a working example):
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "summarize_daily_work",
+    "arguments": {
+      "date": "2026-07-20",
+      "assignee": "sophia.banda@nutrient.io"
+    }
+  }
+}
+```
+
+Omit any optional argument to fall back to its default (e.g. omit `date` for "today", omit `assignee` to scope to
+`ZENDESK_EMAIL`).
+
+### Calling a tool from a plain terminal (no Claude Code needed)
+
+The server is just a Node process speaking MCP over stdio — any MCP client can talk to it, including a terminal
+script. Use `run.mjs` (loads your real `.env`, unlike `test-client.mjs` which uses fake credentials for smoke
+testing):
+
+```bash
+node run.mjs <tool_name> '<json_args>'
+
+# examples
+node run.mjs get_customer_context '{"organization":"Anthology"}'
+node run.mjs get_customer_context '{"requesterEmail":"jane@example.com"}'
+node run.mjs summarize_daily_work '{"date":"2026-07-20"}'
+node run.mjs search_similar_tickets '{"issue":"PDF export hangs on large files","topK":10}'
+```
+
+Run `npm run build` first if you've made source changes — this calls the compiled server in `build/`, not the
+TypeScript source directly.
+
 ## How it's put together
 
 ```

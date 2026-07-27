@@ -9,28 +9,43 @@ export function registerCustomerInfo(server: McpServer, zendesk: ZendeskClient) 
       title: "get_customer_context",
       description:
         "Pull together everything known about a customer: their org, past tickets, and prior reported issues. " +
+        "Look up by requester email for a single contact, or by organization name for the whole account. " +
         "Use this before responding to a ticket to understand history and avoid repeating past answers.",
       inputSchema: {
-        requesterEmail: z.string().email().describe("Email address of the customer/requester"),
+        requesterEmail: z.string().email().optional().describe("Email address of the customer/requester"),
+        organization: z
+          .string()
+          .optional()
+          .describe("Customer organization name to search by, e.g. 'Anthology'. Use instead of requesterEmail to pull the whole account's tickets."),
       },
     },
-    async ({ requesterEmail }) => {
-      const { results: tickets } = await zendesk.searchTicketsByRequester(requesterEmail);
+    async ({ requesterEmail, organization }) => {
+      if (!requesterEmail && !organization) {
+        return {
+          content: [{ type: "text", text: "Provide either requesterEmail or organization." }],
+        };
+      }
+
+      const { results: tickets } = organization
+        ? await zendesk.searchTicketsByOrganization(organization)
+        : await zendesk.searchTicketsByRequester(requesterEmail!);
+
+      const label = organization ? `organization "${organization}"` : requesterEmail!;
 
       let orgSummary = "No organization on file.";
       const orgId = tickets.find((t) => t.organization_id)?.organization_id;
       if (orgId) {
         try {
-          const { organization } = await zendesk.getOrganization(orgId);
-          orgSummary = `${organization.name} (org #${organization.id})` +
-            (organization.tags.length ? `, tags: ${organization.tags.join(", ")}` : "");
+          const { organization: org } = await zendesk.getOrganization(orgId);
+          orgSummary = `${org.name} (org #${org.id})` +
+            (org.tags.length ? `, tags: ${org.tags.join(", ")}` : "");
         } catch {
           orgSummary = `Organization #${orgId} (details unavailable)`;
         }
       }
 
       const lines: string[] = [];
-      lines.push(`## Customer: ${requesterEmail}`);
+      lines.push(`## Customer: ${label}`);
       lines.push(`Organization: ${orgSummary}`);
       lines.push(`Total tickets on file: ${tickets.length}`);
       lines.push("");
