@@ -41,6 +41,25 @@ export interface ZendeskOrganization {
   organization_fields?: Record<string, unknown>;
 }
 
+/**
+ * Zendesk search syntax treats `"`, `:`, and whitespace as structural
+ * (quoting, operators, term separation). Strip/escape them before
+ * interpolating caller-supplied values into a query string, so a value
+ * like `Foo" requester:other@example.com` can't inject extra search
+ * operators or escape out of an intended field.
+ */
+function sanitizeBareTerm(value: string): string {
+  return value.replace(/[":]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function quoteQueryValue(value: string): string {
+  // Zendesk search doesn't support escaping quotes within a quoted phrase,
+  // so the only safe option is to strip them (and backslashes/newlines)
+  // rather than try to escape them.
+  const cleaned = value.replace(/["\\]/g, "").replace(/[\r\n]+/g, " ").trim();
+  return `"${cleaned}"`;
+}
+
 export class ZendeskClient {
   private baseUrl: string;
   private authHeader: string;
@@ -71,7 +90,7 @@ export class ZendeskClient {
 
   /** Full-text search across tickets. Zendesk search syntax: https://developer.zendesk.com/documentation/ticketing/using-the-zendesk-api/zendesk-api-search/ */
   async searchTickets(query: string, opts?: { sortBy?: string; sortOrder?: "asc" | "desc" }) {
-    const q = `type:ticket ${query}`;
+    const q = `type:ticket ${sanitizeBareTerm(query)}`;
     return this.request<{ results: ZendeskTicket[]; count: number }>("/search.json", {
       query: q,
       ...(opts?.sortBy ? { sort_by: opts.sortBy } : {}),
@@ -106,22 +125,24 @@ export class ZendeskClient {
   /** Tickets requested by a given user, for "customer history" lookups. */
   async searchTicketsByRequester(email: string) {
     return this.request<{ results: ZendeskTicket[]; count: number }>("/search.json", {
-      query: `type:ticket requester:${email}`,
+      query: `type:ticket requester:${sanitizeBareTerm(email)}`,
     });
   }
 
   /** Tickets tied to a given customer organization by name, for org-level "customer history" lookups. */
   async searchTicketsByOrganization(organizationName: string) {
     return this.request<{ results: ZendeskTicket[]; count: number }>("/search.json", {
-      query: `type:ticket organization:"${organizationName}"`,
+      query: `type:ticket organization:${quoteQueryValue(organizationName)}`,
     });
   }
 
   /** Tickets updated/solved within a date range, e.g. for the daily summary tool. */
   async ticketsUpdatedSince(isoDate: string, opts?: { statuses?: string[]; assignee?: string; before?: string }) {
-    const statusFilter = opts?.statuses?.length ? ` status<${opts.statuses.join(" status<")}` : "";
-    const assigneeFilter = opts?.assignee ? ` assignee:${opts.assignee}` : "";
-    const beforeFilter = opts?.before ? ` updated<${opts.before}` : "";
+    const statusFilter = opts?.statuses?.length
+      ? ` status<${opts.statuses.map(sanitizeBareTerm).join(" status<")}`
+      : "";
+    const assigneeFilter = opts?.assignee ? ` assignee:${sanitizeBareTerm(opts.assignee)}` : "";
+    const beforeFilter = opts?.before ? ` updated<${sanitizeBareTerm(opts.before)}` : "";
     return this.request<{ results: ZendeskTicket[]; count: number }>("/search.json", {
       query: `type:ticket updated>=${isoDate}${beforeFilter}${statusFilter}${assigneeFilter}`,
       sort_by: "updated_at",
