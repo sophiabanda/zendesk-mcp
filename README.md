@@ -5,7 +5,7 @@ and the official `@modelcontextprotocol/sdk`.
 
 ## What it does
 
-Exposes four tools that Claude (or any MCP client) can call:
+Exposes five tools that Claude (or any MCP client) can call:
 
 | Tool | Purpose |
 |---|---|
@@ -13,6 +13,7 @@ Exposes four tools that Claude (or any MCP client) can call:
 | `get_customer_context` | Pull a customer's org + full ticket history before responding |
 | `assess_solutions_by_version` | Find past fixes for an issue and check if they apply to the customer's version |
 | `summarize_daily_work` | Roll up a day's Zendesk activity: tickets touched, by status, high-priority follow-ups |
+| `sync_rag_store` | Incrementally pull Zendesk tickets updated since the last run and upsert them into the local RAG vector store |
 
 ## Tool reference
 
@@ -30,6 +31,7 @@ table drifts. Params are passed as a JSON object matching the schema below.
 | | `topK` | integer (1-20) | no | `5` | Max number of past-solution matches to consider |
 | `summarize_daily_work` | `date` | string (`YYYY-MM-DD`) | no | today | Day to summarize |
 | | `assignee` | string (email) | no | `ZENDESK_EMAIL` from `.env` | Scopes results to this assignee; defaults to you |
+| `sync_rag_store` | — | (no parameters) | — | — | Safe to run any time; only processes tickets updated since the last sync |
 
 ### Calling a tool through Claude
 
@@ -76,10 +78,23 @@ node run.mjs get_customer_context '{"organization":"Anthology"}'
 node run.mjs get_customer_context '{"requesterEmail":"jane@example.com"}'
 node run.mjs summarize_daily_work '{"date":"2026-07-20"}'
 node run.mjs search_similar_tickets '{"issue":"PDF export hangs on large files","topK":10}'
+node run.mjs sync_rag_store '{}'
 ```
 
 Run `npm run build` first if you've made source changes — this calls the compiled server in `build/`, not the
 TypeScript source directly.
+
+### Syncing the RAG store
+
+The `lancedb` vector DB provider (see Setup below) is a local, file-based store extracted from a one-time export.
+To keep it current without re-pulling that full export, run the incremental sync whenever you want — it only
+processes Zendesk tickets updated since the last run (tracked in `data/rag-store/.sync-state.json`):
+
+```bash
+npm run sync-rag
+# or, equivalently, via the MCP tool:
+node run.mjs sync_rag_store '{}'
+```
 
 ## How it's put together
 
@@ -88,12 +103,19 @@ src/
   clients/
     zendesk.ts     – thin wrapper over the Zendesk REST API (search, tickets, users, orgs)
     vectorDb.ts     – adapter interface (VectorDb) + a mock implementation + a generic HTTP
-                      implementation, so the real backend can be swapped in via .env only
+                      implementation + a lancedb implementation, so the real backend can be
+                      swapped in via .env only
+    embedder.ts     – shared embedding model (Xenova/all-MiniLM-L6-v2) used by both the
+                      lancedb query path and the ingestion pipeline, so vectors stay comparable
+  ingest/
+    syncRagStore.ts – incremental sync: fetch changed tickets, embed, upsert into LanceDB
+    cli.ts          – thin CLI wrapper around syncRagStore.ts (`npm run sync-rag`)
   tools/
     searchSimilarTickets.ts
     customerInfo.ts
     assessSolutions.ts
     dailySummary.ts
+    syncRagStoreTool.ts
   index.ts          – wires everything together and starts the server over stdio
 test-client.mjs      – a tiny MCP client used to sanity-check the server without wiring it into Claude
 ```
@@ -129,7 +151,12 @@ npm run build
 
 `.env` fields:
 - `ZENDESK_SUBDOMAIN` / `ZENDESK_EMAIL` / `ZENDESK_API_TOKEN` — from Zendesk Admin Center > Apps and integrations > APIs > Zendesk API. Generate a token there and enable token access.
-- `VECTOR_DB_PROVIDER` — `mock` to start; switch once you have real connection info.
+- `VECTOR_DB_PROVIDER` — `mock` to start; `lancedb` once you have the real store extracted locally (see below); switch
+  to something else once you have other real connection info.
+- `VECTOR_DB_PATH` — only used by the `lancedb` provider. Path to the extracted LanceDB store, e.g.
+  `./data/rag-store/store`. The store itself is a one-time export from a coworker (an AES-encrypted zip — get the
+  password from them directly, never paste it into chat) extracted into `data/rag-store/` (gitignored). Once
+  extracted, keep it current with `npm run sync-rag` — see "Syncing the RAG store" above.
 
 ## Running it standalone (for testing)
 

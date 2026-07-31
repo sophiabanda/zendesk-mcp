@@ -88,6 +88,21 @@ export class ZendeskClient {
     return (await res.json()) as T;
   }
 
+  /** Like `request`, but for full pagination URLs Zendesk already returns (e.g. `next_page`). */
+  private async requestUrl<T>(url: string): Promise<T> {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: this.authHeader,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Zendesk API error ${res.status} on ${url}: ${body}`);
+    }
+    return (await res.json()) as T;
+  }
+
   /** Full-text search across tickets. Zendesk search syntax: https://developer.zendesk.com/documentation/ticketing/using-the-zendesk-api/zendesk-api-search/ */
   async searchTickets(query: string, opts?: { sortBy?: string; sortOrder?: "asc" | "desc" }) {
     const q = `type:ticket ${sanitizeBareTerm(query)}`;
@@ -136,18 +151,48 @@ export class ZendeskClient {
     });
   }
 
-  /** Tickets updated/solved within a date range, e.g. for the daily summary tool. */
+  /**
+   * Tickets updated/solved within a date range, e.g. for the daily summary tool.
+   *
+   * Zendesk's search endpoint paginates at 100 results/page and caps total
+   * reachable results at 1000 regardless of pagination, so this follows
+   * `next_page` until exhausted (or that cap). If `count` exceeds 1000, the
+   * tail of the window is unreachable via search and this logs a warning —
+   * callers with wider windows should switch to the incremental export API.
+   */
   async ticketsUpdatedSince(isoDate: string, opts?: { statuses?: string[]; assignee?: string; before?: string }) {
     const statusFilter = opts?.statuses?.length
       ? ` status<${opts.statuses.map(sanitizeBareTerm).join(" status<")}`
       : "";
     const assigneeFilter = opts?.assignee ? ` assignee:${sanitizeBareTerm(opts.assignee)}` : "";
     const beforeFilter = opts?.before ? ` updated<${sanitizeBareTerm(opts.before)}` : "";
-    return this.request<{ results: ZendeskTicket[]; count: number }>("/search.json", {
-      query: `type:ticket updated>=${isoDate}${beforeFilter}${statusFilter}${assigneeFilter}`,
-      sort_by: "updated_at",
-      sort_order: "desc",
-    });
+
+    let page = await this.request<{ results: ZendeskTicket[]; count: number; next_page: string | null }>(
+      "/search.json",
+      {
+        query: `type:ticket updated>=${isoDate}${beforeFilter}${statusFilter}${assigneeFilter}`,
+        sort_by: "updated_at",
+        sort_order: "desc",
+      }
+    );
+    const results = [...page.results];
+    const count = page.count;
+
+    while (page.next_page && results.length < 1000) {
+      page = await this.requestUrl<{ results: ZendeskTicket[]; count: number; next_page: string | null }>(
+        page.next_page
+      );
+      results.push(...page.results);
+    }
+
+    if (count > 1000) {
+      console.error(
+        `ticketsUpdatedSince: ${count} tickets matched but Zendesk search caps reachable results at 1000 ` +
+          `(fetched ${results.length}). Narrow the window or switch to the incremental export API to avoid gaps.`
+      );
+    }
+
+    return { results, count };
   }
 }
 

@@ -8,6 +8,7 @@ import { registerSearchSimilarTickets } from "./tools/searchSimilarTickets.js";
 import { registerCustomerInfo } from "./tools/customerInfo.js";
 import { registerAssessSolutions } from "./tools/assessSolutions.js";
 import { registerDailySummary } from "./tools/dailySummary.js";
+import { registerSyncRagStore } from "./tools/syncRagStoreTool.js";
 
 async function main() {
   const zendesk = zendeskClientFromEnv();
@@ -22,6 +23,7 @@ async function main() {
   registerCustomerInfo(server, zendesk);
   registerAssessSolutions(server, vectorDb);
   registerDailySummary(server, zendesk);
+  registerSyncRagStore(server, zendesk);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

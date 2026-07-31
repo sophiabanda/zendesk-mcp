@@ -1,3 +1,5 @@
+import { embedText } from "./embedder.js";
+
 /**
  * Adapter over your coworker's RAG vector database of Zendesk history.
  *
@@ -80,6 +82,50 @@ export class HttpVectorDb implements VectorDb {
   }
 }
 
+/**
+ * Embedded LanceDB store, extracted from a coworker's periodic export
+ * (see data/rag-store/README or project memory for extraction details).
+ *
+ * Query text must be embedded with the SAME model used to build the
+ * `chunks` table, or similarity scores are meaningless:
+ *   model: Xenova/all-MiniLM-L6-v2 (ONNX port of sentence-transformers/all-MiniLM-L6-v2)
+ *   library: @huggingface/transformers 3.8.1, FP32, mean pooling, L2-normalized, 384 dims
+ */
+export class LanceVectorDb implements VectorDb {
+  private tablePromise: Promise<import("@lancedb/lancedb").Table>;
+
+  constructor(private dbPath: string) {
+    this.tablePromise = (async () => {
+      const lancedb = await import("@lancedb/lancedb");
+      const db = await lancedb.connect(this.dbPath);
+      return db.openTable("chunks");
+    })();
+  }
+
+  async search(query: string, topK = 5): Promise<VectorMatch[]> {
+    const [table, vector] = await Promise.all([this.tablePromise, embedText(query)]);
+    const rows = await table.search(vector).limit(topK).toArray();
+    return rows.map((row) => ({
+      ticketId: typeof row.item_uid === "string" ? parseZendeskTicketId(row.item_uid) : undefined,
+      text: row.text as string,
+      // LanceDB returns L2 distance for normalized vectors; convert to a 0-1 similarity score.
+      score: 1 - Math.min(Math.max(row._distance as number, 0), 2) / 2,
+      metadata: {
+        source: row.source,
+        projectOrPlatform: row.project_or_platform,
+        customerName: row.customer_name,
+        section: row.section,
+        createdAt: row.created_at,
+      },
+    }));
+  }
+}
+
+function parseZendeskTicketId(itemUid: string): number | undefined {
+  const match = /^zendesk:(\d+)$/.exec(itemUid);
+  return match ? Number(match[1]) : undefined;
+}
+
 export function vectorDbFromEnv(): VectorDb {
   const provider = process.env.VECTOR_DB_PROVIDER ?? "mock";
   switch (provider) {
@@ -88,6 +134,9 @@ export function vectorDbFromEnv(): VectorDb {
     case "http":
       if (!process.env.VECTOR_DB_URL) throw new Error("VECTOR_DB_URL required for http provider");
       return new HttpVectorDb(process.env.VECTOR_DB_URL, process.env.VECTOR_DB_API_KEY);
+    case "lancedb":
+      if (!process.env.VECTOR_DB_PATH) throw new Error("VECTOR_DB_PATH required for lancedb provider");
+      return new LanceVectorDb(process.env.VECTOR_DB_PATH);
     // Add cases here as you learn his stack, e.g.:
     // case "pinecone": return new PineconeVectorDb(...)
     // case "qdrant": return new QdrantVectorDb(...)
