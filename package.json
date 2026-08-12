@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node build/index.js",
     "dev": "tsc --watch",
-    "sync-rag": "tsc && node build/ingest/cli.js"
+    "sync-rag": "tsc && node build/ingest/cli.js",
+    "zendesk:auth": "node scripts/zendesk-auth.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

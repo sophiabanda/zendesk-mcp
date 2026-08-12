@@ -2,14 +2,15 @@
  * Thin wrapper around the Zendesk REST API.
  * Docs: https://developer.zendesk.com/api-reference/ticketing/introduction/
  *
- * Auth: Zendesk accepts basic auth of the form `email/token:api_token`,
- * base64-encoded. We build that header once and reuse it.
+ * Auth: OAuth Bearer token, obtained via `scripts/zendesk-auth.mjs` and
+ * kept fresh by ZendeskTokenStore (proactive refresh ahead of expiry).
  */
+
+import { ZendeskTokenStore } from "./zendeskTokenStore.js";
 
 export interface ZendeskConfig {
   subdomain: string;
-  email: string;
-  apiToken: string;
+  tokenStore: ZendeskTokenStore;
 }
 
 export interface ZendeskTicket {
@@ -62,12 +63,19 @@ function quoteQueryValue(value: string): string {
 
 export class ZendeskClient {
   private baseUrl: string;
-  private authHeader: string;
+  private tokenStore: ZendeskTokenStore;
 
   constructor(config: ZendeskConfig) {
     this.baseUrl = `https://${config.subdomain}.zendesk.com/api/v2`;
-    const raw = `${config.email}/token:${config.apiToken}`;
-    this.authHeader = `Basic ${Buffer.from(raw).toString("base64")}`;
+    this.tokenStore = config.tokenStore;
+  }
+
+  private async authHeaders(): Promise<Record<string, string>> {
+    const accessToken = await this.tokenStore.getAccessToken();
+    return {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    };
   }
 
   private async request<T>(path: string, params?: Record<string, string>): Promise<T> {
@@ -75,12 +83,7 @@ export class ZendeskClient {
     if (params) {
       for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     }
-    const res = await fetch(url.toString(), {
-      headers: {
-        Authorization: this.authHeader,
-        "Content-Type": "application/json",
-      },
-    });
+    const res = await fetch(url.toString(), { headers: await this.authHeaders() });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`Zendesk API error ${res.status} on ${path}: ${body}`);
@@ -90,12 +93,7 @@ export class ZendeskClient {
 
   /** Like `request`, but for full pagination URLs Zendesk already returns (e.g. `next_page`). */
   private async requestUrl<T>(url: string): Promise<T> {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: this.authHeader,
-        "Content-Type": "application/json",
-      },
-    });
+    const res = await fetch(url, { headers: await this.authHeaders() });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`Zendesk API error ${res.status} on ${url}: ${body}`);
@@ -198,12 +196,18 @@ export class ZendeskClient {
 
 export function zendeskClientFromEnv(): ZendeskClient {
   const subdomain = process.env.ZENDESK_SUBDOMAIN;
-  const email = process.env.ZENDESK_EMAIL;
-  const apiToken = process.env.ZENDESK_API_TOKEN;
-  if (!subdomain || !email || !apiToken) {
+  const clientId = process.env.ZENDESK_CLIENT_ID;
+  const clientSecret = process.env.ZENDESK_CLIENT_SECRET;
+  if (!subdomain || !clientId || !clientSecret) {
     throw new Error(
-      "Missing Zendesk env vars. Set ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN (see .env.example)."
+      "Missing Zendesk env vars. Set ZENDESK_SUBDOMAIN, ZENDESK_CLIENT_ID, ZENDESK_CLIENT_SECRET (see .env.example)."
     );
   }
-  return new ZendeskClient({ subdomain, email, apiToken });
+  const tokenStore = new ZendeskTokenStore({
+    subdomain,
+    clientId,
+    clientSecret,
+    tokenPath: ".zendesk-token.json",
+  });
+  return new ZendeskClient({ subdomain, tokenStore });
 }
